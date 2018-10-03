@@ -30,7 +30,7 @@ def parse_id_melt(fileMelt):
         with open(fileMelt, 'r') as stream:
             for line in stream:
                 sentence = line.rstrip().split()
-                # take the 4 first elements to create a quardruple (key_word, cat_syn, context_id, key_w_id)
+                # take the 4 first elements to create a quadruple (key_word, cat_syn, context_id, key_w_id)
                 sent_id, w_key, cat_key, w_id = sentence[:4]    
                 voc_melt.add(w_key.lower())            
                 # create an list to stock each sentence so that the order of the words in context can be perserved
@@ -72,7 +72,7 @@ class Fredist(object):
  
     def __iter__(self):
         for fName in os.listdir(self.dirname):
-            if fName != 'README': # skip the README file
+            if fName != 'README' and fName != 'thesaurus_french_ADV.txt': # skip the README file and ADV
                 # print(fName)
                 self.cats_num += 1
                 joined_rn = os.path.join(self.dirname, fName)
@@ -88,18 +88,21 @@ class Fredist(object):
                 words = line.rstrip().split()
                 cat, w_key = words[0].split("|") 
                 w_neigh = {} 
-                for w in words[1:]:
+                for w in words[1:11]:
                     one_neig, score_sim = w.split("|")[1].split(":")
                     # print(one_neig, score_sim)
                     w_neigh[one_neig] = score_sim
                 # print(w_neigh)
                 # input()
                 dico_thesau[(w_key, cat)] = w_neigh
-        # print(dico_thesau)
+        for i in dico_thesau:
+            print(dico_thesau[i])
+        # pprint.pprint(dico_thesau)
         return dico_thesau
 
     def show_fred_stats(self):
         print("In total %d files have been read.\n%d key_word and their 100 neighbors have been recorded." % (self.cats_num, len(self.neighbors)))
+
 
 
 #-------------------------------- Part FrWac -------------------------------------
@@ -108,8 +111,8 @@ def read_frwak(frwakFile):
     """
     read the file frwak and stock the 700-dimention vectors in a numpy array
     return wordVector dictionnary:
-    {word: (nparray([0.0001, -0.00034, ...]), cat_w),
-     word: (nparray(...), cat_w),
+    {word: [nparray([0.0001, -0.00034, ...]), cat_w],
+     word: [nparray(...), cat_w],
      ...
     }
     """   
@@ -154,32 +157,40 @@ def cbow(dico_melt, dico_frwac, cible=False, full_window=True):
 
     # calculate the averaged vectors for CBOW
     vect_cbow = {}
-    for quardruple in dico_melt.keys():
-        vect_cbow[quardruple] = np.zeros(700, dtype=float)
+    for quadruple in dico_melt.keys():
+        vect_cbow[quadruple] = np.zeros(700, dtype=float)
         
         if full_window:
-            cbow = dico_melt[quardruple] # cbow is a list [(w1, cat1), (w2, cat2)...]
+            cbow = dico_melt[quadruple] # cbow is a list [(w1, cat1), (w2, cat2)...]
             if not cible:
-                ind_keyw = quardruple[3]
+                ind_keyw = quadruple[3]
                 del cbow[int(ind_keyw)-1]
         else:# not take full_window, the averaged vector is the cible word itself
-            cbow = [quardruple[:2]]
+            cbow = [quadruple[:2]]
 
         count = 0
         for (w, cat) in cbow:
             if w in dico_frwac.keys():
                 count += 1
-                vect_cbow[quardruple] += dico_frwac[w][0]
+                vect_cbow[quadruple] += dico_frwac[w][0]
         print("contexte words = " + str(count))
-        vect_cbow[quardruple] /= count # count the averaged value
-        vect_cbow[quardruple] /= math.sqrt((vect_cbow[quardruple] ** 2).sum() + 1e-6) # normalize vector
+        vect_cbow[quadruple] /= count # count the averaged value
+        vect_cbow[quadruple] /= math.sqrt((vect_cbow[quadruple] ** 2).sum() + 1e-6) # normalize vector
     
     print("CBOW vectors calculation done (normalized).\n")
     # print(vect_cbow)
     return vect_cbow
 
 
-def frwac_candidats_sub(vectCBOW, dicoFrwac):
+def normalise_frwac(dicoFrwac):
+    # normalize the vectors in dico_frwac
+    for k in dicoFrwac.keys():
+        dicoFrwac[k][0] /= math.sqrt((dicoFrwac[k][0]**2).sum() + 1e-6)
+    return dicoFrwac
+
+
+
+def frwac_candidates_sub(vectCBOW, dicoFrwac_normalized):
     """
     function that takes an averaged vector of CBOW and calculate the cosine value with each word from Frwac, 
     then get the first 10 substituts for this averaged vector
@@ -190,31 +201,27 @@ def frwac_candidats_sub(vectCBOW, dicoFrwac):
     }
     """
     
-    # normalize the vectors in dico_frwac
-    t1 = time.time()
-    for k in dicoFrwac.keys():
-        dicoFrwac[k][0] /= math.sqrt((dicoFrwac[k][0]**2).sum() + 1e-6)
-    print("FrWak vectors normalized. (time = %.2f s)" % (time.time() - t1))
-    
     # calculate the scores cosine, and sort
-    t2 = time.time()
+    t1 = time.time()
     cand_cos = {} 
     for (key_w, key_cat, id_sent, id_w) in vectCBOW.keys():
         substituts = [] # create a list to stock all substitut words and the score cosine
-        for sub in dicoFrwac.keys():
-            score = (vectCBOW[(key_w, key_cat, id_sent, id_w)] * dicoFrwac[sub][0]).sum() #already normalized before, just multiple then sum
-            sub_cat = dicoFrwac[sub][1] #get the category syntaxe of the word substitut
-            substituts.append((sub, sub_cat, score)) # add the triple into substituts list
+        for sub in dicoFrwac_normalized.keys():
+            if dicoFrwac_normalized[sub][-1].lower() == key_cat.lower(): # if the word in Frwac has the same category with the cible word, calculate the cosine
+                score = (vectCBOW[(key_w, key_cat, id_sent, id_w)] * dicoFrwac_normalized[sub][0]).sum() #already normalized before, just multiple then sum
+                sub_cat = dicoFrwac_normalized[sub][1] #get the category syntaxe of the word substitut
+                substituts.append((sub, sub_cat, score)) # add the triple into substituts list
+
         # sort the score cosine from highest to lowest
         sorted_cand = sorted(substituts, key=lambda x: x[2], reverse=True)
         # choose the first 10 substituts with the same syntactic category as candidats
         final_cand = []
         for cand in sorted_cand:
-            if cand[1].lower() == key_cat.lower() and len(final_cand) < 10:
+            if len(final_cand) < 10:
                 final_cand.append(cand)
         cand_cos[key_w, key_cat, id_sent] = final_cand
     
-    print("FrWac 10 candidats choosen. (time = %.2f s)\n" % (time.time() - t2))
+    print("FrWac 10 candidats choosen. (time = %.2f s)\n" % (time.time() - t1))
     pprint.pprint(cand_cos)
     return cand_cos
 
@@ -234,12 +241,14 @@ if __name__ == "__main__":
     #-------- test --------
     melt_dico, melt_voc = parse_id_melt(melt_file)
 
-    # candidates_fredist = Fredist(fred_rep)
-    # candidates_fredist.__iter__() # candidate fredist is ready
+    candidates_fredist = Fredist(fred_rep)
+    fredist_candidates = candidates_fredist.__iter__() # candidate fredist is ready
     # candidates_fredist.show_fred_stats()
 
-    frwak_dico = read_frwak(frwak_file)
+    #frwak_dico = read_frwak(frwak_file)
+    #frwak_dico_normalized = normalise_frwac(frwak_dico)
 
-    vect_cbow = cbow(melt_dico, frwak_dico)
-    frwac_candidats_sub(vect_cbow, frwak_dico)
+    #vect_cbow = cbow(melt_dico, frwak_dico)
+
+    #frwac_candidates_sub(vect_cbow, frwak_dico_normalized)
 
